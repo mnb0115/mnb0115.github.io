@@ -1,90 +1,617 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="ja">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Progate</title>
-  <link href="https://maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css" rel="stylesheet" integrity="sha384-wvfXpqpZZVQGK6TAh5PVlGOfQNHSoD2xbE+QkPxCAFlNEevoEH3Sl0sibVcOQVnN" crossorigin="anonymous">
-  <link rel="stylesheet" type="text/css" href="stylesheet.css">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Weight Logger（Web Serial / CSV）</title>
+  <!-- 社内ガイドライン準拠テーマ（クボタブルー等） -->
+  <link rel="stylesheet" href="kubota-theme.css" />
 </head>
+
 <body>
-  <header>
-    <div class="container">
-      <div class="header-left">
-        <img class="logo" src="https://prog-8.com/images/html/advanced/main_logo.png">
+<header>
+  <h1>Weight Logger（Web Serial / CSV）</h1>
+  <p>
+    AtomS3 / M5Unit MiniScale のシリアル出力（例: <span class="mono">Weight: 12.34</span>）を読み取り、<b>一定間隔で表示＆CSV保存</b>します。<br/>
+    ※Chromeで動作。ページは <b>HTTPS または localhost</b> で開いてください（<span class="mono">file://</span>直開きは不可の場合あり）。
+  </p>
+</header>
+
+<div class="wrap">
+  <div class="grid">
+    <!-- Left column -->
+    <div class="card">
+      <h2>1) 接続・設定</h2>
+
+      <div class="row">
+        <span class="pill" title="接続状態">
+          <span id="dot" class="dot"></span>
+          <span id="connText">未接続</span>
+        </span>
+        <span class="pill" title="ブラウザ機能">
+          <span id="apiText">Web Serial: -</span>
+        </span>
+        <span class="pill" title="保存API（逐次保存用）">
+          <span id="fsText">File Picker: -</span>
+        </span>
       </div>
-      <span class="fa fa-bars menu-icon"></span>
-      <div class="header-right">
-        <a href="#">レッスン</a>
-        <a href="#">新規登録</a>
-        <a href="#" class="login">ログイン</a>
+
+      <div class="row">
+        <label>Baud</label>
+        <input id="baud" type="number" value="115200" min="300" step="300" />
+        <label>表示/記録間隔(s)</label>
+        <input id="interval" type="number" value="1.0" min="0.1" step="0.1" />
+      </div>
+
+      <div class="row">
+        <label>重量抽出（正規表現）</label>
+        <input id="regex" type="text" value="Weight:\s*([+-]?\d+(?:\.\d+)?)" />
+      </div>
+
+      <div class="row">
+        <button id="btnConnect" class="btn ok">Connect（ポート選択）</button>
+        <button id="btnDisconnect" class="btn ng" disabled>Disconnect</button>
+        <button id="btnForget" class="btn warn" disabled title="（対応ブラウザのみ）権限/デバイス紐付けを忘れます">Forget</button>
+      </div>
+
+      <div class="row">
+        <label><input id="chkRecordNoData" type="checkbox" /> no data（欠損）もCSVに残す</label>
+        <label><input id="chkStaleWarn" type="checkbox" checked /> stale（更新停止）警告を表示</label>
+      </div>
+
+      <div class="row">
+        <label>保存方式</label>
+        <select id="saveMode">
+          <option value="download">停止時にCSVダウンロード（簡単・確実）</option>
+          <option value="stream">ファイルへ逐次保存（showSaveFilePicker）</option>
+        </select>
+        <button id="btnPickFile" class="btn" disabled>保存先を選択</button>
+      </div>
+
+      <div class="hint">
+        <ul>
+          <li><b>Connect</b> はクリック操作が必要です（requestPortはユーザー操作必須）。</li>
+          <li>逐次保存は <span class="mono">showSaveFilePicker()</span> に対応している場合のみ有効です。</li>
+        </ul>
       </div>
     </div>
-  </header>
-  <div class="top-wrapper">
-    <div class="container">
-      <h1>LEARN TO CODE.<br>LEARN TO BE CREATIVE.</h1>
-      <p>Progateはオンラインプログラミング学習サービスです。<br>初心者にもやさしいスライドとレッスンで、ウェブサービスを作りながらプログラミングを学んでいきましょう。</p>
-      <div class="btn-wrapper">
-        <a href="#" class="btn signup">新規登録はこちら</a>
-        <p>or</p>
-        <a href="#" class="btn facebook"><span class="fa fa-facebook"></span>Facebookで登録</a>
-        <a href="#" class="btn twitter"><span class="fa fa-twitter"></span>Twitterで登録</a>
+
+    <!-- Right column -->
+    <div class="card">
+      <h2>2) 計測・ログ</h2>
+
+      <div class="big" id="weightBig">--.-- g</div>
+      <div class="sub" id="weightSub">最新値：未受信</div>
+
+      <div class="kpi">
+        <div class="box">
+          <div class="t">セッション開始</div>
+          <div class="v" id="kpiStart">-</div>
+        </div>
+        <div class="box">
+          <div class="t">経過(s)</div>
+          <div class="v" id="kpiElapsed">0</div>
+        </div>
+        <div class="box">
+          <div class="t">記録行数</div>
+          <div class="v" id="kpiRows">0</div>
+        </div>
+        <div class="box">
+          <div class="t">最終更新(秒前)</div>
+          <div class="v" id="kpiAge">-</div>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:12px;">
+        <button id="btnStart" class="btn ok" disabled>Start Logging</button>
+        <button id="btnStop" class="btn ng" disabled>Stop</button>
+        <button id="btnDownload" class="btn" disabled>Download CSV</button>
+        <button id="btnClear" class="btn warn">Clear Log</button>
+      </div>
+
+      <div id="log" class="log" aria-label="ログ表示"></div>
+
+      <div class="footer-note">
+        ファイル名は開始時刻ベース（<span class="mono">yyyymmddhhmmss_weight_log.csv</span>）で提案します（逐次保存/ダウンロード両方）。<br/>
+        ※ブラウザ上では同名衝突の自動連番（_01 など）までは保証できないため、必要に応じて保存時に変更してください。
       </div>
     </div>
   </div>
-  <div class="lesson-wrapper">
-    <div class="container">
-      <div class="heading">
-        <h2>Learn Where to Get Started!</h2>
-      </div>
-      <div class="lessons">
-        <div class="lesson">
-          <div class="lesson-icon">
-            <img src="https://prog-8.com/images/html/advanced/html.png">
-            <p>HTML & CSS</p>
-          </div>
-          <p class="text-contents">ウェブページの作成に使用される言語です。HTMLとCSSを組み合わせることで、静的なページを作り上げることができます。</p>
-        </div>
-        <div class="lesson">
-          <div class="lesson-icon">
-            <img src="https://prog-8.com/images/html/advanced/jQuery.png">
-            <p>jQuery</p>
-          </div>
-          <p class="text-contents">素敵な動きを手軽に実装できるJavaScriptライブラリです。 アニメーション効果をつけたり、Ajax（エイジャックス）を使って外部ファイルを読み込んだりと色々なことができます。</p>
-        </div>
-        <div class="lesson">
-          <div class="lesson-icon">
-            <img src="https://prog-8.com/images/html/advanced/ruby.png">
-            <p>Ruby</p>
-          </div>
-          <p class="text-contents">オープンソースの動的なプログラミング言語で、 シンプルさと高い生産性を備えています。大きなWebアプリケーションから小さな日用ツールまで、さまざまなソフトウェアを作ることができます。</p>
-        </div>
-        <div class="lesson">
-          <div class="lesson-icon">
-            <img src="https://prog-8.com/images/html/advanced/php.png">
-            <p>PHP</p>
-          </div>
-          <p class="text-contents">HTMLだけではページの内容を変えることはできません。PHPはHTMLにプログラムを埋め込み、それを可能にします。</p>
-        </div>
-      </div>
-      <div class="clear"></div>
-    </div>
-  </div>
-  <div class="message-wrapper">
-    <div class="container">
-      <div class="heading">
-        <h2>さぁ、あなたもProgateでプログラミングを学んでみませんか?</h2>
-        <h3>Let's learn to code, learn to be creative!</h3>
-      </div>
-      <span class="btn message">さっそく開発する</span>
-    </div>
-  </div>
-  <footer>
-    <div class="container">
-      <img src="https://prog-8.com/images/html/advanced/footer_logo.png">
-      <p>Learn to Code, Learn to be Creative.</p>
-    </div>
-  </footer>
+</div>
+
+<script>
+(() => {
+  // ========= Utilities =========
+  const $ = (id) => document.getElementById(id);
+
+  function pad2(n){ return String(n).padStart(2,'0'); }
+  function tsHuman(d=new Date()){
+    return `${d.getFullYear()}/${pad2(d.getMonth()+1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  }
+  function tsFileBase(d=new Date()){
+    // yyyymmddhhmmss
+    return `${d.getFullYear()}${pad2(d.getMonth()+1)}${pad2(d.getDate())}${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
+  }
+  function epochMs(){ return Date.now(); }
+
+  function logLine(msg){
+    const el = $("log");
+    el.textContent += msg + "\n";
+    el.scrollTop = el.scrollHeight;
+  }
+  function setConnState(state, extra=""){
+    // state: 'disconnected' | 'connected' | 'warning'
+    const dot = $("dot");
+    const text = $("connText");
+    if(state === "connected"){
+      dot.className = "dot ok";
+      text.textContent = "接続中" + (extra ? `：${extra}` : "");
+    } else if(state === "warning"){
+      dot.className = "dot warn";
+      text.textContent = "注意" + (extra ? `：${extra}` : "");
+    } else {
+      dot.className = "dot";
+      text.textContent = "未接続" + (extra ? `：${extra}` : "");
+    }
+  }
+
+  // ========= Feature detection =========
+  const hasSerial = ("serial" in navigator);
+  const hasSavePicker = ("showSaveFilePicker" in window);
+  $("apiText").textContent = `Web Serial: ${hasSerial ? "OK" : "NG"}`;
+  $("fsText").textContent  = `File Picker: ${hasSavePicker ? "OK" : "NG"}`;
+
+  if(!hasSerial){
+    setConnState("warning", "Web Serial未対応");
+    logLine("[error] このブラウザは Web Serial API に未対応です。Chrome/Edge（Chromium）を使用してください。");
+  }
+
+  // ========= State =========
+  let port = null;
+  let reader = null;
+  let readLoopRunning = false;
+
+  let latestWeight = null;
+  let latestLinePerf = 0; // performance.now() when updated
+  let lastRawLine = "";
+  let buffer = "";
+
+  let sessionStartDate = null;
+  let sessionStartPerf = 0;
+  let tickTimer = null;
+
+  // CSV rows (download mode)
+  let csvRows = [];
+
+  // File streaming mode
+  let fileHandle = null;
+  let fileWritable = null;
+  let writeQueue = Promise.resolve(); // serialize writes
+
+  // ========= Parsing =========
+  function getWeightRegex(){
+    try{
+      return new RegExp($("regex").value);
+    }catch(e){
+      return null;
+    }
+  }
+  function parseWeight(line){
+    const re = getWeightRegex();
+    if(!re) return null;
+    const m = line.match(re);
+    if(!m) return null;
+    const v = parseFloat(m[1]);
+    if(Number.isNaN(v)) return null;
+    return v;
+  }
+
+  // ========= UI update =========
+  function updateWeightUI(){
+    if(latestWeight === null){
+      $("weightBig").textContent = "--.-- g";
+      $("weightSub").textContent = "最新値：未受信";
+    }else{
+      $("weightBig").textContent = `${latestWeight.toFixed(2)} g`;
+      $("weightSub").textContent = `最新値：${tsHuman()} / raw: ${lastRawLine || "-"}`;
+    }
+  }
+  function updateKpi(){
+    if(!sessionStartDate){
+      $("kpiStart").textContent = "-";
+      $("kpiElapsed").textContent = "0";
+      $("kpiRows").textContent = "0";
+      $("kpiAge").textContent = "-";
+      return;
+    }
+    $("kpiStart").textContent = tsHuman(sessionStartDate);
+    const elapsed = Math.floor((performance.now() - sessionStartPerf) / 1000);
+    $("kpiElapsed").textContent = String(elapsed);
+
+    $("kpiRows").textContent = String(Math.max(0, csvRows.length - 1)); // excluding header
+
+    if(latestWeight === null){
+      $("kpiAge").textContent = "-";
+    }else{
+      const age = (performance.now() - latestLinePerf) / 1000;
+      $("kpiAge").textContent = age.toFixed(1);
+    }
+  }
+
+  function enableControlsConnected(on){
+    $("btnConnect").disabled = on;
+    $("btnDisconnect").disabled = !on;
+    $("btnForget").disabled = !on;
+    $("btnStart").disabled = !on;
+  }
+  function enableControlsLogging(on){
+    $("btnStart").disabled = on || !port;
+    $("btnStop").disabled = !on;
+    $("btnDownload").disabled = on ? true : (csvRows.length <= 1);
+    $("saveMode").disabled = on;
+    $("btnPickFile").disabled = on || $("saveMode").value !== "stream" || !hasSavePicker;
+  }
+
+  // ========= Serial read loop =========
+  async function startReadLoop(){
+    if(!port || !port.readable) return;
+    if(readLoopRunning) return;
+    readLoopRunning = true;
+
+    reader = port.readable.getReader();
+    buffer = "";
+
+    logLine("[info] read loop started.");
+
+    try{
+      while(true){
+        const { value, done } = await reader.read();
+        if(done) break;
+        if(value){
+          const text = new TextDecoder().decode(value, { stream: true });
+          buffer += text;
+          const lines = buffer.split(/\r?\n/);
+          buffer = lines.pop() ?? "";
+
+          for(const line of lines){
+            const s = line.trim();
+            if(!s) continue;
+            lastRawLine = s;
+
+            const w = parseWeight(s);
+            if(w !== null){
+              latestWeight = w;
+              latestLinePerf = performance.now();
+              updateWeightUI();
+            }
+          }
+        }
+      }
+    }catch(err){
+      logLine(`[error] read loop error: ${err}`);
+    }finally{
+      try{ reader.releaseLock(); }catch(e){}
+      reader = null;
+      readLoopRunning = false;
+      logLine("[info] read loop stopped.");
+    }
+  }
+
+  async function stopReadLoop(){
+    try{
+      if(reader){
+        try{ await reader.cancel(); }catch(e){}
+        try{ reader.releaseLock(); }catch(e){}
+      }
+    }finally{
+      reader = null;
+      readLoopRunning = false;
+    }
+  }
+
+  // ========= Connect / Disconnect =========
+  async function connect(){
+    if(!hasSerial) return;
+
+    const baud = parseInt($("baud").value, 10) || 115200;
+
+    try{
+      port = await navigator.serial.requestPort();
+      await port.open({ baudRate: baud });
+
+      setConnState("connected", `baud=${baud}`);
+      enableControlsConnected(true);
+      enableControlsLogging(false);
+
+      logLine(`[info] connected. baud=${baud}`);
+      startReadLoop();
+
+    }catch(err){
+      logLine(`[error] connect failed: ${err}`);
+      setConnState("disconnected");
+      port = null;
+      enableControlsConnected(false);
+      enableControlsLogging(false);
+    }
+  }
+
+  async function disconnect(){
+    if(tickTimer) stopLogging();
+
+    await stopReadLoop();
+
+    try{
+      if(port){
+        try{ await port.close(); }catch(e){}
+      }
+    }finally{
+      port = null;
+      setConnState("disconnected");
+      enableControlsConnected(false);
+      enableControlsLogging(false);
+      logLine("[info] disconnected.");
+    }
+  }
+
+  async function forget(){
+    if(!port) return;
+    if(typeof port.forget !== "function"){
+      logLine("[warn] このブラウザでは port.forget() が利用できません。");
+      return;
+    }
+    try{
+      await port.forget();
+      logLine("[info] port permission forgotten.");
+    }catch(err){
+      logLine(`[error] forget failed: ${err}`);
+    }
+  }
+
+  // ========= Logging =========
+  function resetSession(){
+    sessionStartDate = new Date();
+    sessionStartPerf = performance.now();
+    latestWeight = null;
+    latestLinePerf = 0;
+    lastRawLine = "";
+    updateWeightUI();
+
+    csvRows = [];
+    csvRows.push(["timestamp","elapsed_s","epoch_ms","weight_g"]);
+
+    updateKpi();
+  }
+
+  function buildSuggestedFilename(){
+    return `${tsFileBase(sessionStartDate || new Date())}_weight_log.csv`;
+  }
+
+  async function pickSaveFile(){
+    if(!hasSavePicker){
+      logLine("[warn] showSaveFilePicker 未対応のため、逐次保存できません。");
+      return;
+    }
+    try{
+      const suggestedName = buildSuggestedFilename();
+      fileHandle = await window.showSaveFilePicker({
+        suggestedName,
+        types: [{ description:"CSV", accept: { "text/csv": [".csv"] } }]
+      });
+      logLine(`[info] save file selected: ${suggestedName}`);
+    }catch(err){
+      logLine(`[warn] save file selection cancelled/failed: ${err}`);
+      fileHandle = null;
+    }
+  }
+
+  async function openWritableAndWriteHeader(){
+    if(!fileHandle) throw new Error("fileHandle is null");
+    fileWritable = await fileHandle.createWritable();
+    await fileWritable.write("timestamp,elapsed_s,epoch_ms,weight_g\n");
+  }
+
+  async function closeWritable(){
+    if(fileWritable){
+      try{ await fileWritable.close(); }catch(e){}
+      fileWritable = null;
+    }
+  }
+
+  function queueWrite(text){
+    writeQueue = writeQueue.then(async () => {
+      if(!fileWritable) return;
+      await fileWritable.write(text);
+    }).catch(err => {
+      logLine(`[error] file write error: ${err}`);
+    });
+    return writeQueue;
+  }
+
+  function startLogging(){
+    if(!port){
+      logLine("[warn] 未接続です。Connectしてください。");
+      return;
+    }
+    if(tickTimer){
+      logLine("[warn] すでにlogging中です。");
+      return;
+    }
+
+    resetSession();
+
+    const intervalSec = Math.max(0.1, parseFloat($("interval").value) || 1.0);
+    const staleWarn = $("chkStaleWarn").checked;
+    const recordNoData = $("chkRecordNoData").checked;
+
+    const mode = $("saveMode").value;
+
+    logLine(`[info] logging start. interval=${intervalSec}s mode=${mode}`);
+
+    if(mode === "stream"){
+      if(!hasSavePicker){
+        logLine("[error] 逐次保存モードですが showSaveFilePicker が未対応です。保存方式を変更してください。");
+        return;
+      }
+      if(!fileHandle){
+        logLine("[warn] 逐次保存モード：先に「保存先を選択」を押してください。");
+        return;
+      }
+    }
+
+    (async () => {
+      if(mode === "stream"){
+        try{
+          await openWritableAndWriteHeader();
+          logLine("[info] streaming file opened & header written.");
+        }catch(err){
+          logLine(`[error] cannot open writable: ${err}`);
+        }
+      }
+    })();
+
+    $("kpiStart").textContent = tsHuman(sessionStartDate);
+
+    const tick = async () => {
+      const nowPerf = performance.now();
+      const elapsedS = Math.floor((nowPerf - sessionStartPerf) / 1000);
+      const ts = tsHuman(new Date());
+      const ms = epochMs();
+
+      let line;
+      let csvLine = null;
+
+      if(latestWeight === null){
+        line = `${ts}  +${String(elapsedS).padStart(6," ")}s  weight: (no data)`;
+        if(recordNoData){
+          csvRows.push([ts, elapsedS, ms, ""]);
+          csvLine = `${ts},${elapsedS},${ms},\n`;
+        }
+      }else{
+        const age = (nowPerf - latestLinePerf)/1000;
+        const stale = age > (intervalSec * 2.5);
+        const suffix = (staleWarn && stale) ? `  (stale ${age.toFixed(1)}s)` : "";
+        line = `${ts}  +${String(elapsedS).padStart(6," ")}s  weight: ${latestWeight.toFixed(2)} g${suffix}`;
+
+        csvRows.push([ts, elapsedS, ms, latestWeight.toFixed(2)]);
+        csvLine = `${ts},${elapsedS},${ms},${latestWeight.toFixed(2)}\n`;
+      }
+
+      logLine(line);
+      updateKpi();
+
+      if(mode === "stream" && csvLine){
+        if(fileWritable){
+          await queueWrite(csvLine);
+        }
+      }
+
+      $("btnDownload").disabled = true;
+    };
+
+    tick();
+    tickTimer = setInterval(tick, intervalSec * 1000);
+
+    enableControlsLogging(true);
+  }
+
+  async function stopLogging(){
+    if(!tickTimer) return;
+    clearInterval(tickTimer);
+    tickTimer = null;
+
+    if($("saveMode").value === "stream"){
+      await writeQueue;
+      await closeWritable();
+      logLine("[info] streaming file closed.");
+    }
+
+    logLine("[info] logging stopped.");
+
+    $("btnDownload").disabled = (csvRows.length <= 1);
+    enableControlsLogging(false);
+  }
+
+  function escapeCsv(v){
+    if(v === null || v === undefined) return "";
+    const s = String(v);
+    if(/[\",\n]/.test(s)){
+      return `\"${s.replaceAll('"','""')}\"`;
+    }
+    return s;
+  }
+
+  function downloadCsv(){
+    if(csvRows.length <= 1){
+      logLine("[warn] CSVに出力するデータがありません。");
+      return;
+    }
+    const csv = csvRows.map(cols => cols.map(escapeCsv).join(",")).join("\n") + "\n";
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = buildSuggestedFilename();
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+
+    URL.revokeObjectURL(url);
+    logLine(`[info] CSV downloaded: ${a.download}`);
+  }
+
+  // ========= Event wiring =========
+  $("btnConnect").addEventListener("click", connect);
+  $("btnDisconnect").addEventListener("click", disconnect);
+  $("btnForget").addEventListener("click", forget);
+
+  $("btnStart").addEventListener("click", startLogging);
+  $("btnStop").addEventListener("click", stopLogging);
+  $("btnDownload").addEventListener("click", downloadCsv);
+
+  $("btnClear").addEventListener("click", () => {
+    $("log").textContent = "";
+    logLine("[info] log cleared.");
+  });
+
+  $("saveMode").addEventListener("change", () => {
+    const mode = $("saveMode").value;
+    $("btnPickFile").disabled = (mode !== "stream") || !hasSavePicker || !!tickTimer;
+    if(mode !== "stream"){
+      fileHandle = null;
+      closeWritable();
+      logLine("[info] save mode: download");
+    }else{
+      logLine("[info] save mode: stream（保存先を選択してください）");
+    }
+  });
+
+  $("btnPickFile").addEventListener("click", pickSaveFile);
+
+  $("btnPickFile").disabled = ($("saveMode").value !== "stream") || !hasSavePicker;
+
+  if(hasSerial){
+    navigator.serial.addEventListener("connect", (e) => {
+      logLine("[info] device connected to system.");
+    });
+    navigator.serial.addEventListener("disconnect", (e) => {
+      logLine("[warn] device disconnected from system.");
+      setConnState("warning", "デバイス切断");
+      if(tickTimer){
+        stopLogging();
+      }
+    });
+  }
+
+  setConnState("disconnected");
+  enableControlsConnected(false);
+  enableControlsLogging(false);
+  updateWeightUI();
+  updateKpi();
+
+  logLine("[info] ready. Click Connect to select a serial port.");
+})();
+</script>
 </body>
 </html>
+
