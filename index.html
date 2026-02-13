@@ -1,617 +1,634 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="utf-8" />
+  <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Weight Logger（Web Serial / CSV）</title>
-  <!-- 社内ガイドライン準拠テーマ（クボタブルー等） -->
-  <link rel="stylesheet" href="index.css" />
+  <title>ろ紙ろ過・重量ログ 可視化（最長線形区間）</title>
+  <link rel="icon" href="favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
 </head>
-
 <body>
-<header>
-  <h1>Weight Logger（Web Serial / CSV）</h1>
-  <p>
-    AtomS3 / M5Unit MiniScale のシリアル出力（例: <span class="mono">Weight: 12.34</span>）を読み取り、<b>一定間隔で表示＆CSV保存</b>します。<br/>
-    ※Chromeで動作。ページは <b>HTTPS または localhost</b> で開いてください（<span class="mono">file://</span>直開きは不可の場合あり）。
-  </p>
-</header>
-
-<div class="wrap">
-  <div class="grid">
-    <!-- Left column -->
-    <div class="card">
-      <h2>1) 接続・設定</h2>
-
-      <div class="row">
-        <span class="pill" title="接続状態">
-          <span id="dot" class="dot"></span>
-          <span id="connText">未接続</span>
-        </span>
-        <span class="pill" title="ブラウザ機能">
-          <span id="apiText">Web Serial: -</span>
-        </span>
-        <span class="pill" title="保存API（逐次保存用）">
-          <span id="fsText">File Picker: -</span>
-        </span>
-      </div>
-
-      <div class="row">
-        <label>Baud</label>
-        <input id="baud" type="number" value="115200" min="300" step="300" />
-        <label>表示/記録間隔(s)</label>
-        <input id="interval" type="number" value="1.0" min="0.1" step="0.1" />
-      </div>
-
-      <div class="row">
-        <label>重量抽出（正規表現）</label>
-        <input id="regex" type="text" value="Weight:\s*([+-]?\d+(?:\.\d+)?)" />
-      </div>
-
-      <div class="row">
-        <button id="btnConnect" class="btn ok">Connect（ポート選択）</button>
-        <button id="btnDisconnect" class="btn ng" disabled>Disconnect</button>
-        <button id="btnForget" class="btn warn" disabled title="（対応ブラウザのみ）権限/デバイス紐付けを忘れます">Forget</button>
-      </div>
-
-      <div class="row">
-        <label><input id="chkRecordNoData" type="checkbox" /> no data（欠損）もCSVに残す</label>
-        <label><input id="chkStaleWarn" type="checkbox" checked /> stale（更新停止）警告を表示</label>
-      </div>
-
-      <div class="row">
-        <label>保存方式</label>
-        <select id="saveMode">
-          <option value="download">停止時にCSVダウンロード（簡単・確実）</option>
-          <option value="stream">ファイルへ逐次保存（showSaveFilePicker）</option>
-        </select>
-        <button id="btnPickFile" class="btn" disabled>保存先を選択</button>
-      </div>
-
-      <div class="hint">
-        <ul>
-          <li><b>Connect</b> はクリック操作が必要です（requestPortはユーザー操作必須）。</li>
-          <li>逐次保存は <span class="mono">showSaveFilePicker()</span> に対応している場合のみ有効です。</li>
-        </ul>
+  <header class="app-header" role="banner">
+    <div class="brandbar"></div>
+    <div class="container header-inner">
+      <div class="titleblock">
+        <h1 class="app-title">ろ紙ろ過・重量ログ 可視化</h1>
+        <p class="app-subtitle">横軸：経過時間(s)／縦軸：重量(g)　|　<strong>最長線形区間</strong>（R²・n条件）と傾きa[g/s]を自動算出</p>
       </div>
     </div>
+  </header>
 
-    <!-- Right column -->
-    <div class="card">
-      <h2>2) 計測・ログ</h2>
-
-      <div class="big" id="weightBig">--.-- g</div>
-      <div class="sub" id="weightSub">最新値：未受信</div>
-
-      <div class="kpi">
-        <div class="box">
-          <div class="t">セッション開始</div>
-          <div class="v" id="kpiStart">-</div>
-        </div>
-        <div class="box">
-          <div class="t">経過(s)</div>
-          <div class="v" id="kpiElapsed">0</div>
-        </div>
-        <div class="box">
-          <div class="t">記録行数</div>
-          <div class="v" id="kpiRows">0</div>
-        </div>
-        <div class="box">
-          <div class="t">最終更新(秒前)</div>
-          <div class="v" id="kpiAge">-</div>
-        </div>
+  <main class="container" role="main">
+    <section class="panel" aria-label="Input and settings">
+      <div class="panel-head">
+        <h2 class="panel-title">データ読み込み</h2>
+        <p class="panel-note">CSV（weight_log.csv など）を選択してください。開始点 tₛ は <b>ファイルごと</b>に設定できます。重ね描き時は各 tₛ を 0 秒として揃えて表示します。</p>
       </div>
 
-      <div class="row" style="margin-top:12px;">
-        <button id="btnStart" class="btn ok" disabled>Start Logging</button>
-        <button id="btnStop" class="btn ng" disabled>Stop</button>
-        <button id="btnDownload" class="btn" disabled>Download CSV</button>
-        <button id="btnClear" class="btn warn">Clear Log</button>
+      <div class="controls">
+        <div class="file-picker">
+          <span class="label">CSVファイル</span>
+          <div class="file-row">
+            <label class="file-btn" for="fileInput">
+              <span class="file-btn-icon" aria-hidden="true">⭳</span>
+              <span class="file-btn-text">ファイル選択</span>
+            </label>
+            <input type="file" id="fileInput" accept=".csv" multiple />
+            <div class="file-meta" aria-live="polite">
+              <span id="fileNames" class="file-names">未選択</span>
+              <span class="file-hint">（複数可）</span>
+            </div>
+          </div>
+          <div class="microhint">ヒント：グラフ上の点をクリックすると、そのファイルの開始点 tₛ をクリック位置にセットできます（重ね描きでもOK）</div>
+        </div>
+
+        <div class="toggle-group" role="group" aria-label="Plot options">
+          <label class="toggle">
+            <input type="checkbox" id="overlay" checked />
+            <span>重ね描き（各tₛ=0に整列）</span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" id="markers" />
+            <span>マーカー</span>
+          </label>
+        </div>
+
+        <button id="resetZoom" class="btn btn-ghost" type="button">ズームリセット</button>
       </div>
 
-      <div id="log" class="log" aria-label="ログ表示"></div>
-
-      <div class="footer-note">
-        ファイル名は開始時刻ベース（<span class="mono">yyyymmddhhmmss_weight_log.csv</span>）で提案します（逐次保存/ダウンロード両方）。<br/>
-        ※ブラウザ上では同名衝突の自動連番（_01 など）までは保証できないため、必要に応じて保存時に変更してください。
+      <div class="settings">
+        <div class="setting">
+          <label for="minN">最小点数 n ≥</label>
+          <input type="number" id="minN" min="2" step="1" value="5" />
+        </div>
+        <div class="setting">
+          <label for="minR2">決定係数 R² ≥</label>
+          <input type="number" id="minR2" min="0" max="1" step="0.01" value="0.95" />
+        </div>
+        <div class="setting">
+          <label for="stepT">候補T刻み Δt (s)</label>
+          <input type="number" id="stepT" min="1" step="1" value="1" />
+        </div>
+        <button id="reanalyze" class="btn btn-primary" type="button">再計算</button>
       </div>
+
+      <details class="details">
+        <summary>評価条件（ファイルごと開始点）</summary>
+        <div class="details-body">
+          <p class="muted">各ファイルについて、開始点 <code>tₛ</code> を個別に設定し、評価区間 <code>tₛ ≤ t ≤ T</code> で一次回帰 <code>y = a t + b</code> を実行します。条件 <code>n ≥ n_min</code> かつ <code>R² ≥ R²_min</code> を満たす範囲のうち最大Tを「最長線形区間」とします。候補Tは Δt 刻み（既定 1s）です。</p>
+        </div>
+      </details>
+    </section>
+
+    <section class="summary" aria-label="Results">
+      <div id="summary"></div>
+    </section>
+
+    <!-- ★追加：計算結果 表 -->
+    <section class="panel" aria-label="計算結果表" style="margin-top:14px;">
+      <div class="panel-head">
+        <h2 class="panel-title">計算結果（表）</h2>
+        <p class="panel-note">各ファイルの「最長線形区間」結果を、指定フォーマット（系列 / T[s] / n / a / b / R²）で一覧表示します。</p>
+      </div>
+
+      <div class="controls" style="justify-content:flex-start; gap:10px;">
+        <button id="btnCopyTSV" class="btn btn-ghost" type="button">TSVコピー（Excel貼付）</button>
+        <button id="btnDownloadCSV" class="btn btn-ghost" type="button">CSVダウンロード</button>
+      </div>
+
+      <div style="overflow:auto; margin-top:10px;">
+        <table id="resultTable" border="1" cellspacing="0" cellpadding="6"
+               style="border-collapse:collapse; min-width:760px; background:#fff;">
+          <thead>
+            <tr style="background:#f4f4f4;">
+              <th>系列</th>
+              <th>T[s]</th>
+              <th>n</th>
+              <th>傾き a [g/s]</th>
+              <th>切片 b [g]</th>
+              <th>R²</th>
+            </tr>
+          </thead>
+          <tbody><!-- JSで行を挿入 --></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="charts" aria-label="Charts">
+      <div id="plot" class="plot"></div>
+      <div id="plots" class="plots"></div>
+    </section>
+  </main>
+
+  <footer class="app-footer" role="contentinfo">
+    <div class="container footer-inner">
+      <small class="muted">ローカルで動作します（ブラウザ内で読み込み・解析・描画。ファイルは外部へ送信されません）。</small>
     </div>
-  </div>
-</div>
+  </footer>
 
 <script>
-(() => {
-  // ========= Utilities =========
-  const $ = (id) => document.getElementById(id);
+  const COLORS = ['#00a8a9', '#cbaf00', '#e39300', '#d35344', '#72af2d', '#0074b0', '#5f7fb1', '#7f7f7f'];
 
-  function pad2(n){ return String(n).padStart(2,'0'); }
-  function tsHuman(d=new Date()){
-    return `${d.getFullYear()}/${pad2(d.getMonth()+1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
-  }
-  function tsFileBase(d=new Date()){
-    // yyyymmddhhmmss
-    return `${d.getFullYear()}${pad2(d.getMonth()+1)}${pad2(d.getDate())}${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
-  }
-  function epochMs(){ return Date.now(); }
+  const fileInput = document.getElementById('fileInput');
+  const fileNames = document.getElementById('fileNames');
 
-  function logLine(msg){
-    const el = $("log");
-    el.textContent += msg + "\n";
-    el.scrollTop = el.scrollHeight;
-  }
-  function setConnState(state, extra=""){
-    // state: 'disconnected' | 'connected' | 'warning'
-    const dot = $("dot");
-    const text = $("connText");
-    if(state === "connected"){
-      dot.className = "dot ok";
-      text.textContent = "接続中" + (extra ? `：${extra}` : "");
-    } else if(state === "warning"){
-      dot.className = "dot warn";
-      text.textContent = "注意" + (extra ? `：${extra}` : "");
-    } else {
-      dot.className = "dot";
-      text.textContent = "未接続" + (extra ? `：${extra}` : "");
-    }
+  let lastFiles = [];
+  let startByName = {}; // { fileName: tStart }
+
+  function updateFileNames() {
+    const files = Array.from(fileInput.files || []);
+    if (!files.length) { fileNames.textContent = '未選択'; return; }
+    const names = files.map(f => f.name);
+    const head = names.slice(0, 3).join(' / ');
+    const tail = names.length > 3 ? ` ほか${names.length - 3}件` : '';
+    fileNames.textContent = head + tail;
   }
 
-  // ========= Feature detection =========
-  const hasSerial = ("serial" in navigator);
-  const hasSavePicker = ("showSaveFilePicker" in window);
-  $("apiText").textContent = `Web Serial: ${hasSerial ? "OK" : "NG"}`;
-  $("fsText").textContent  = `File Picker: ${hasSavePicker ? "OK" : "NG"}`;
+  function parseCSV(text) {
+    const lines = text.split(/\r?\n/).filter(l => l.trim().length);
+    if (lines.length === 0) return { rows: [], header: [] };
 
-  if(!hasSerial){
-    setConnState("warning", "Web Serial未対応");
-    logLine("[error] このブラウザは Web Serial API に未対応です。Chrome/Edge（Chromium）を使用してください。");
-  }
+    const header = lines[0].split(',').map(s => s.trim());
+    const idxElapsed = header.findIndex(h => h.toLowerCase() === 'elapsed_s');
+    const idxWeight  = header.findIndex(h => h.toLowerCase() === 'weight_g');
+    const idxTs       = header.findIndex(h => h.toLowerCase() === 'timestamp');
+    const hasNamed = (idxElapsed >= 0 && idxWeight >= 0);
 
-  // ========= State =========
-  let port = null;
-  let reader = null;
-  let readLoopRunning = false;
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(',').map(s => s.trim());
+      if (cols.length < 2) continue;
 
-  let latestWeight = null;
-  let latestLinePerf = 0; // performance.now() when updated
-  let lastRawLine = "";
-  let buffer = "";
-
-  let sessionStartDate = null;
-  let sessionStartPerf = 0;
-  let tickTimer = null;
-
-  // CSV rows (download mode)
-  let csvRows = [];
-
-  // File streaming mode
-  let fileHandle = null;
-  let fileWritable = null;
-  let writeQueue = Promise.resolve(); // serialize writes
-
-  // ========= Parsing =========
-  function getWeightRegex(){
-    try{
-      return new RegExp($("regex").value);
-    }catch(e){
-      return null;
-    }
-  }
-  function parseWeight(line){
-    const re = getWeightRegex();
-    if(!re) return null;
-    const m = line.match(re);
-    if(!m) return null;
-    const v = parseFloat(m[1]);
-    if(Number.isNaN(v)) return null;
-    return v;
-  }
-
-  // ========= UI update =========
-  function updateWeightUI(){
-    if(latestWeight === null){
-      $("weightBig").textContent = "--.-- g";
-      $("weightSub").textContent = "最新値：未受信";
-    }else{
-      $("weightBig").textContent = `${latestWeight.toFixed(2)} g`;
-      $("weightSub").textContent = `最新値：${tsHuman()} / raw: ${lastRawLine || "-"}`;
-    }
-  }
-  function updateKpi(){
-    if(!sessionStartDate){
-      $("kpiStart").textContent = "-";
-      $("kpiElapsed").textContent = "0";
-      $("kpiRows").textContent = "0";
-      $("kpiAge").textContent = "-";
-      return;
-    }
-    $("kpiStart").textContent = tsHuman(sessionStartDate);
-    const elapsed = Math.floor((performance.now() - sessionStartPerf) / 1000);
-    $("kpiElapsed").textContent = String(elapsed);
-
-    $("kpiRows").textContent = String(Math.max(0, csvRows.length - 1)); // excluding header
-
-    if(latestWeight === null){
-      $("kpiAge").textContent = "-";
-    }else{
-      const age = (performance.now() - latestLinePerf) / 1000;
-      $("kpiAge").textContent = age.toFixed(1);
-    }
-  }
-
-  function enableControlsConnected(on){
-    $("btnConnect").disabled = on;
-    $("btnDisconnect").disabled = !on;
-    $("btnForget").disabled = !on;
-    $("btnStart").disabled = !on;
-  }
-  function enableControlsLogging(on){
-    $("btnStart").disabled = on || !port;
-    $("btnStop").disabled = !on;
-    $("btnDownload").disabled = on ? true : (csvRows.length <= 1);
-    $("saveMode").disabled = on;
-    $("btnPickFile").disabled = on || $("saveMode").value !== "stream" || !hasSavePicker;
-  }
-
-  // ========= Serial read loop =========
-  async function startReadLoop(){
-    if(!port || !port.readable) return;
-    if(readLoopRunning) return;
-    readLoopRunning = true;
-
-    reader = port.readable.getReader();
-    buffer = "";
-
-    logLine("[info] read loop started.");
-
-    try{
-      while(true){
-        const { value, done } = await reader.read();
-        if(done) break;
-        if(value){
-          const text = new TextDecoder().decode(value, { stream: true });
-          buffer += text;
-          const lines = buffer.split(/\r?\n/);
-          buffer = lines.pop() ?? "";
-
-          for(const line of lines){
-            const s = line.trim();
-            if(!s) continue;
-            lastRawLine = s;
-
-            const w = parseWeight(s);
-            if(w !== null){
-              latestWeight = w;
-              latestLinePerf = performance.now();
-              updateWeightUI();
-            }
-          }
-        }
+      let elapsed, weight, ts;
+      if (hasNamed) {
+        elapsed = parseFloat(cols[idxElapsed]);
+        weight  = parseFloat(cols[idxWeight]);
+        ts      = (idxTs >= 0) ? cols[idxTs] : '';
+      } else {
+        ts = cols[0] ?? '';
+        elapsed = parseFloat(cols[1]);
+        weight  = parseFloat(cols[3]);
       }
-    }catch(err){
-      logLine(`[error] read loop error: ${err}`);
-    }finally{
-      try{ reader.releaseLock(); }catch(e){}
-      reader = null;
-      readLoopRunning = false;
-      logLine("[info] read loop stopped.");
+      if (!Number.isFinite(elapsed) || !Number.isFinite(weight)) continue;
+      rows.push({ elapsed, weight, ts });
     }
+    rows.sort((a,b) => a.elapsed - b.elapsed);
+    return { rows, header };
   }
 
-  async function stopReadLoop(){
-    try{
-      if(reader){
-        try{ await reader.cancel(); }catch(e){}
-        try{ reader.releaseLock(); }catch(e){}
-      }
-    }finally{
-      reader = null;
-      readLoopRunning = false;
+  function linreg(x, y) {
+    const n = x.length;
+    if (n < 2) return null;
+
+    const meanX = x.reduce((a,b)=>a+b,0) / n;
+    const meanY = y.reduce((a,b)=>a+b,0) / n;
+
+    let sxx = 0, sxy = 0, syy = 0;
+    for (let i=0; i<n; i++) {
+      const dx = x[i] - meanX;
+      const dy = y[i] - meanY;
+      sxx += dx*dx;
+      sxy += dx*dy;
+      syy += dy*dy;
     }
+    if (sxx === 0) return null;
+
+    const a = sxy / sxx;
+    const b = meanY - a*meanX;
+
+    let sse = 0;
+    for (let i=0; i<n; i++) {
+      const yhat = a*x[i] + b;
+      const e = y[i] - yhat;
+      sse += e*e;
+    }
+    const sst = syy;
+    const r2 = (sst === 0) ? 1 : (1 - (sse / sst));
+
+    return { a, b, r2, n };
   }
 
-  // ========= Connect / Disconnect =========
-  async function connect(){
-    if(!hasSerial) return;
-
-    const baud = parseInt($("baud").value, 10) || 115200;
-
-    try{
-      port = await navigator.serial.requestPort();
-      await port.open({ baudRate: baud });
-
-      setConnState("connected", `baud=${baud}`);
-      enableControlsConnected(true);
-      enableControlsLogging(false);
-
-      logLine(`[info] connected. baud=${baud}`);
-      startReadLoop();
-
-    }catch(err){
-      logLine(`[error] connect failed: ${err}`);
-      setConnState("disconnected");
-      port = null;
-      enableControlsConnected(false);
-      enableControlsLogging(false);
-    }
+  function ceilToStep(x, step) { return Math.ceil(x / step) * step; }
+  function clampStartToData(tStart, maxElapsed) {
+    if (!Number.isFinite(tStart)) return 0;
+    return Math.min(Math.max(0, tStart), Math.max(0, maxElapsed));
   }
 
-  async function disconnect(){
-    if(tickTimer) stopLogging();
+  function findLongestLinearInterval(rows, tStart, stepT, minN, minR2) {
+    if (!rows.length) return null;
+    const maxT = rows[rows.length-1].elapsed;
+    const start = clampStartToData(tStart, maxT);
+    const firstT = Math.max(start, ceilToStep(start, stepT));
 
-    await stopReadLoop();
-
-    try{
-      if(port){
-        try{ await port.close(); }catch(e){}
-      }
-    }finally{
-      port = null;
-      setConnState("disconnected");
-      enableControlsConnected(false);
-      enableControlsLogging(false);
-      logLine("[info] disconnected.");
+    let best = null;
+    for (let T = firstT; T <= maxT + 1e-9; T += stepT) {
+      const sub = rows.filter(r => r.elapsed >= start - 1e-9 && r.elapsed <= T + 1e-9);
+      if (sub.length < minN) continue;
+      const x = sub.map(r => r.elapsed);
+      const y = sub.map(r => r.weight);
+      const reg = linreg(x, y);
+      if (!reg) continue;
+      if (reg.r2 >= minR2) best = { tStart: start, T, ...reg, x0: start, x1: T };
     }
+    return best;
   }
 
-  async function forget(){
-    if(!port) return;
-    if(typeof port.forget !== "function"){
-      logLine("[warn] このブラウザでは port.forget() が利用できません。");
-      return;
-    }
-    try{
-      await port.forget();
-      logLine("[info] port permission forgotten.");
-    }catch(err){
-      logLine(`[error] forget failed: ${err}`);
-    }
-  }
+  function buildTrace(it, showMarkers, alignToStart) {
+    const x = it.rows.map(r => alignToStart ? (r.elapsed - it.tStart) : r.elapsed);
+    const y = it.rows.map(r => r.weight);
+    const custom = it.rows.map(r => [r.elapsed, r.ts || '']);
 
-  // ========= Logging =========
-  function resetSession(){
-    sessionStartDate = new Date();
-    sessionStartPerf = performance.now();
-    latestWeight = null;
-    latestLinePerf = 0;
-    lastRawLine = "";
-    updateWeightUI();
-
-    csvRows = [];
-    csvRows.push(["timestamp","elapsed_s","epoch_ms","weight_g"]);
-
-    updateKpi();
-  }
-
-  function buildSuggestedFilename(){
-    return `${tsFileBase(sessionStartDate || new Date())}_weight_log.csv`;
-  }
-
-  async function pickSaveFile(){
-    if(!hasSavePicker){
-      logLine("[warn] showSaveFilePicker 未対応のため、逐次保存できません。");
-      return;
-    }
-    try{
-      const suggestedName = buildSuggestedFilename();
-      fileHandle = await window.showSaveFilePicker({
-        suggestedName,
-        types: [{ description:"CSV", accept: { "text/csv": [".csv"] } }]
-      });
-      logLine(`[info] save file selected: ${suggestedName}`);
-    }catch(err){
-      logLine(`[warn] save file selection cancelled/failed: ${err}`);
-      fileHandle = null;
-    }
-  }
-
-  async function openWritableAndWriteHeader(){
-    if(!fileHandle) throw new Error("fileHandle is null");
-    fileWritable = await fileHandle.createWritable();
-    await fileWritable.write("timestamp,elapsed_s,epoch_ms,weight_g\n");
-  }
-
-  async function closeWritable(){
-    if(fileWritable){
-      try{ await fileWritable.close(); }catch(e){}
-      fileWritable = null;
-    }
-  }
-
-  function queueWrite(text){
-    writeQueue = writeQueue.then(async () => {
-      if(!fileWritable) return;
-      await fileWritable.write(text);
-    }).catch(err => {
-      logLine(`[error] file write error: ${err}`);
-    });
-    return writeQueue;
-  }
-
-  function startLogging(){
-    if(!port){
-      logLine("[warn] 未接続です。Connectしてください。");
-      return;
-    }
-    if(tickTimer){
-      logLine("[warn] すでにlogging中です。");
-      return;
-    }
-
-    resetSession();
-
-    const intervalSec = Math.max(0.1, parseFloat($("interval").value) || 1.0);
-    const staleWarn = $("chkStaleWarn").checked;
-    const recordNoData = $("chkRecordNoData").checked;
-
-    const mode = $("saveMode").value;
-
-    logLine(`[info] logging start. interval=${intervalSec}s mode=${mode}`);
-
-    if(mode === "stream"){
-      if(!hasSavePicker){
-        logLine("[error] 逐次保存モードですが showSaveFilePicker が未対応です。保存方式を変更してください。");
-        return;
-      }
-      if(!fileHandle){
-        logLine("[warn] 逐次保存モード：先に「保存先を選択」を押してください。");
-        return;
-      }
-    }
-
-    (async () => {
-      if(mode === "stream"){
-        try{
-          await openWritableAndWriteHeader();
-          logLine("[info] streaming file opened & header written.");
-        }catch(err){
-          logLine(`[error] cannot open writable: ${err}`);
-        }
-      }
-    })();
-
-    $("kpiStart").textContent = tsHuman(sessionStartDate);
-
-    const tick = async () => {
-      const nowPerf = performance.now();
-      const elapsedS = Math.floor((nowPerf - sessionStartPerf) / 1000);
-      const ts = tsHuman(new Date());
-      const ms = epochMs();
-
-      let line;
-      let csvLine = null;
-
-      if(latestWeight === null){
-        line = `${ts}  +${String(elapsedS).padStart(6," ")}s  weight: (no data)`;
-        if(recordNoData){
-          csvRows.push([ts, elapsedS, ms, ""]);
-          csvLine = `${ts},${elapsedS},${ms},\n`;
-        }
-      }else{
-        const age = (nowPerf - latestLinePerf)/1000;
-        const stale = age > (intervalSec * 2.5);
-        const suffix = (staleWarn && stale) ? `  (stale ${age.toFixed(1)}s)` : "";
-        line = `${ts}  +${String(elapsedS).padStart(6," ")}s  weight: ${latestWeight.toFixed(2)} g${suffix}`;
-
-        csvRows.push([ts, elapsedS, ms, latestWeight.toFixed(2)]);
-        csvLine = `${ts},${elapsedS},${ms},${latestWeight.toFixed(2)}\n`;
-      }
-
-      logLine(line);
-      updateKpi();
-
-      if(mode === "stream" && csvLine){
-        if(fileWritable){
-          await queueWrite(csvLine);
-        }
-      }
-
-      $("btnDownload").disabled = true;
+    return {
+      x,
+      y,
+      customdata: custom,
+      type: 'scatter',
+      mode: showMarkers ? 'lines+markers' : 'lines',
+      name: it.name,
+      meta: { fileKey: it.name },
+      line: { color: it.color, width: 2 },
+      marker: { color: it.color, size: 5 },
+      hovertemplate:
+        (alignToStart ? '開始点基準: %{x:.0f}s<br>' : '経過時間: %{x:.0f}s<br>') +
+        '重量: %{y:.2f} g<br>' +
+        '元の時刻: %{customdata[0]:.0f}s<br>' +
+        '%{customdata[1]}<extra>' + it.name + '</extra>'
     };
-
-    tick();
-    tickTimer = setInterval(tick, intervalSec * 1000);
-
-    enableControlsLogging(true);
   }
 
-  async function stopLogging(){
-    if(!tickTimer) return;
-    clearInterval(tickTimer);
-    tickTimer = null;
+  function buildFitTrace(it, alignToStart) {
+    const best = it.best;
+    if (!best) return null;
 
-    if($("saveMode").value === "stream"){
-      await writeQueue;
-      await closeWritable();
-      logLine("[info] streaming file closed.");
+    if (alignToStart) {
+      const x = [0, best.T - best.tStart];
+      const y0 = best.a * best.tStart + best.b;
+      const y1 = best.a * best.T + best.b;
+      return {
+        x, y: [y0, y1],
+        type: 'scatter', mode: 'lines',
+        name: `${it.name} 回帰(0–${(best.T-best.tStart).toFixed(0)}s)`,
+        meta: { fileKey: it.name },
+        line: { color: it.color, width: 3, dash: 'dash' },
+        hovertemplate:
+          `tₛ=${best.tStart.toFixed(0)}s / T=${best.T.toFixed(0)}s<br>` +
+          `a=${best.a.toFixed(6)} g/s<br>` +
+          `b=${best.b.toFixed(3)} g<br>` +
+          `R²=${best.r2.toFixed(4)} / n=${best.n}<extra>${it.name}</extra>`
+      };
+    } else {
+      const x = [best.x0, best.x1];
+      const y = x.map(t => best.a*t + best.b);
+      return {
+        x, y,
+        type: 'scatter', mode: 'lines',
+        name: `${it.name} 回帰(${best.tStart.toFixed(0)}–${best.T.toFixed(0)}s)`,
+        meta: { fileKey: it.name },
+        line: { color: it.color, width: 3, dash: 'dash' },
+        hovertemplate:
+          `tₛ=${best.tStart.toFixed(0)}s / T=${best.T.toFixed(0)}s<br>` +
+          `a=${best.a.toFixed(6)} g/s<br>` +
+          `b=${best.b.toFixed(3)} g<br>` +
+          `R²=${best.r2.toFixed(4)} / n=${best.n}<extra>${it.name}</extra>`
+      };
     }
-
-    logLine("[info] logging stopped.");
-
-    $("btnDownload").disabled = (csvRows.length <= 1);
-    enableControlsLogging(false);
   }
 
-  function escapeCsv(v){
-    if(v === null || v === undefined) return "";
-    const s = String(v);
-    if(/[\",\n]/.test(s)){
-      return `\"${s.replaceAll('"','""')}\"`;
-    }
-    return s;
+  function computeStats(rows) {
+    const ys = rows.map(r => r.weight);
+    const min = Math.min(...ys);
+    const max = Math.max(...ys);
+    const mean = ys.reduce((a,b)=>a+b,0) / ys.length;
+    const t0 = rows[0]?.elapsed ?? 0;
+    const t1 = rows[rows.length-1]?.elapsed ?? 0;
+    return { min, max, mean, t0, t1, n: rows.length };
   }
 
-  function downloadCsv(){
-    if(csvRows.length <= 1){
-      logLine("[warn] CSVに出力するデータがありません。");
-      return;
+  // ★修正：正しいHTMLエスケープ（安全のため）
+  function escapeHtml(str) {
+    return String(str)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
+  function renderSummary(items, minN, minR2) {
+    const div = document.getElementById('summary');
+    if (!items.length) { div.innerHTML = ''; return; }
+
+    const html = items.map((it) => {
+      const s = it.stats;
+      const best = it.best;
+      const tStart = it.tStart;
+
+      const bestHtml = best ?
+        `<div class="kv"><span class="k">開始点 tₛ</span><span class="v">${best.tStart.toFixed(0)} s</span></div>
+         <div class="kv"><span class="k">最長線形区間 T</span><span class="v">${best.T.toFixed(0)} s</span></div>
+         <div class="kv"><span class="k">傾き a</span><span class="v">${best.a.toFixed(6)} g/s</span></div>
+         <div class="kv"><span class="k">当てはまり</span><span class="v">R² ${best.r2.toFixed(4)} / n ${best.n}</span></div>`
+        :
+        `<div class="warn">条件（tₛ=${tStart.toFixed(0)}s, n≥${minN}, R²≥${minR2}）を満たす区間が見つかりませんでした。</div>`;
+
+      return `
+        <article class="card">
+          <header class="card-head">
+            <span class="swatch" style="background:${it.color}"></span>
+            <div class="card-title">${escapeHtml(it.name)}</div>
+          </header>
+          <div class="card-body">
+            <div class="meta">点数 ${s.n} ／ 時間 ${s.t0.toFixed(0)}–${s.t1.toFixed(0)}s ／ 重量 min ${s.min.toFixed(2)} g・mean ${s.mean.toFixed(2)} g・max ${s.max.toFixed(2)} g</div>
+            <div class="card-controls">
+              <label class="mini-label">開始点 tₛ (s)</label>
+              <input class="mini-input" type="number" min="0" step="1" value="${Math.round(tStart)}" data-file="${escapeHtml(it.name)}" />
+              <span class="mini-note">※このファイルだけに適用</span>
+            </div>
+            <div class="divider"></div>
+            ${bestHtml}
+          </div>
+        </article>`;
+    }).join('');
+
+    div.innerHTML = `<div class="cards">${html}</div>`;
+
+    div.querySelectorAll('input.mini-input').forEach(inp => {
+      inp.addEventListener('change', async (e) => {
+        const key = e.target.getAttribute('data-file');
+        const v = parseFloat(e.target.value);
+        startByName[key] = Number.isFinite(v) ? v : 0;
+        if (lastFiles.length) await analyzeAndPlot(lastFiles);
+      });
+    });
+  }
+
+  function plotLayoutBase(title, overlayMode) {
+    const shapes = [];
+    if (overlayMode) {
+      // aligned zero line
+      shapes.push({
+        type: 'line', xref: 'x', yref: 'paper',
+        x0: 0, x1: 0,
+        y0: 0, y1: 1,
+        line: { color: '#00a8a9', width: 1, dash: 'dot' }
+      });
     }
-    const csv = csvRows.map(cols => cols.map(escapeCsv).join(",")).join("\n") + "\n";
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+
+    return {
+      title: { text: title, y: 0.97 },
+      paper_bgcolor: '#ffffff',
+      plot_bgcolor: '#ffffff',
+      font: { family: getComputedStyle(document.body).fontFamily, color: '#111111' },
+      xaxis: {
+        title: overlayMode ? '経過時間（開始点基準, s）' : '経過時間 (s)',
+        zeroline: false,
+        gridcolor: '#e6e9ef',
+        linecolor: '#c8ceda',
+        tickcolor: '#c8ceda'
+      },
+      yaxis: {
+        title: '重量 (g)',
+        zeroline: false,
+        gridcolor: '#e6e9ef',
+        linecolor: '#c8ceda',
+        tickcolor: '#c8ceda'
+      },
+      margin: { t: 60, r: 24, b: 56, l: 70 },
+      legend: { orientation: 'h', bgcolor: 'rgba(255,255,255,0.8)' },
+      shapes
+    };
+  }
+
+  function attachClickToSetStart(plotDiv) {
+    if (!plotDiv || !plotDiv.on) return;
+    plotDiv.removeAllListeners?.('plotly_click');
+    plotDiv.on('plotly_click', async (ev) => {
+      const pt = ev?.points?.[0];
+      const x = pt?.x;
+      const fileKey = pt?.data?.meta?.fileKey;
+      if (!Number.isFinite(x) || !fileKey) return;
+
+      const overlayMode = document.getElementById('overlay').checked;
+      const current = startByName[fileKey] ?? 0;
+      const newStart = overlayMode ? Math.max(0, Math.round(current + x)) : Math.max(0, Math.round(x));
+
+      startByName[fileKey] = newStart;
+      const cardInput = document.querySelector(`input.mini-input[data-file="${CSS.escape(fileKey)}"]`);
+      if (cardInput) cardInput.value = String(newStart);
+
+      if (lastFiles.length) await analyzeAndPlot(lastFiles);
+    });
+  }
+
+  function plotOverlay(items, showMarkers) {
+    const traces = [];
+    items.forEach((it) => {
+      traces.push(buildTrace(it, showMarkers, true));
+      const fit = buildFitTrace(it, true);
+      if (fit) traces.push(fit);
+    });
+
+    Plotly.newPlot('plot', traces, plotLayoutBase('重量 vs 経過時間（重ね描き：開始点整列）', true), { responsive: true }).then(() => {
+      attachClickToSetStart(document.getElementById('plot'));
+    });
+    document.getElementById('plots').innerHTML = '';
+  }
+
+  function plotSeparate(items, showMarkers) {
+    Plotly.purge('plot');
+    document.getElementById('plot').innerHTML = '';
+
+    const container = document.getElementById('plots');
+    container.innerHTML = '';
+
+    items.forEach((it) => {
+      const div = document.createElement('div');
+      div.className = 'plot';
+      container.appendChild(div);
+
+      const traces = [buildTrace(it, showMarkers, false)];
+      const fit = buildFitTrace(it, false);
+      if (fit) traces.push(fit);
+
+      Plotly.newPlot(div, traces, plotLayoutBase(it.name, false), { responsive: true }).then(() => {
+        attachClickToSetStart(div);
+      });
+    });
+  }
+
+  async function readFile(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsText(file);
+    });
+  }
+
+  function getSelectedFiles() { return Array.from(fileInput.files || []); }
+
+  // === 計算結果 表出力（系列 / T[s] / n / a / b / R²） ===================
+
+  function seriesLabelFromFileName(fileName) {
+    const base = String(fileName || '').replace(/\.[^.]+$/, ''); // 拡張子除去
+    return base
+      .replace(/mgL/gi, 'mg/L')
+      .replace(/mg\/l/gi, 'mg/L');
+  }
+
+  function renderResultTable(items) {
+    const table = document.getElementById('resultTable');
+    if (!table) return;
+
+    const tbody = table.querySelector('tbody');
+    tbody.innerHTML = '';
+
+    const fmtInt = (v) => Number.isFinite(v) ? String(Math.round(v)) : '';
+    const fmt2   = (v) => Number.isFinite(v) ? v.toFixed(2) : '';
+
+    items.forEach(it => {
+      const best = it.best;
+
+      // T[s] は「最長線形区間の長さ」を採用（T - tₛ）
+      // ★もし「絶対時間のT」を出したいなら、次行を `const Tval = best ? best.T : NaN;` に変更
+      const Tval = best ? (best.T - best.tStart) : NaN;
+
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${escapeHtml(seriesLabelFromFileName(it.name))}</td>
+        <td style="text-align:right;">${fmtInt(Tval)}</td>
+        <td style="text-align:right;">${best ? fmtInt(best.n) : ''}</td>
+        <td style="text-align:right;">${best ? fmt2(best.a) : ''}</td>
+        <td style="text-align:right;">${best ? fmt2(best.b) : ''}</td>
+        <td style="text-align:right;">${best ? fmt2(best.r2) : ''}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+
+  function tableToTSV() {
+    const table = document.getElementById('resultTable');
+    if (!table) return '';
+    const rows = Array.from(table.querySelectorAll('tr')).map(tr => {
+      const cols = Array.from(tr.children).map(td => td.innerText.replace(/\r?\n/g, ' '));
+      return cols.join('\t');
+    });
+    return rows.join('\n');
+  }
+
+  function copyResultTSV() {
+    const tsv = tableToTSV();
+    if (!tsv) return;
+    navigator.clipboard?.writeText(tsv);
+  }
+
+  function downloadResultCSV(filename = 'calculation_results.csv') {
+    const table = document.getElementById('resultTable');
+    if (!table) return;
+
+    const rows = Array.from(table.querySelectorAll('tr')).map(tr => {
+      const cols = Array.from(tr.children).map(td => {
+        const s = td.innerText.replace(/\r?\n/g, ' ');
+        return `"${s.replace(/"/g, '""')}"`;
+      });
+      return cols.join(',');
+    });
+
+    const csv = rows.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
-
-    const a = document.createElement("a");
+    const a = document.createElement('a');
     a.href = url;
-    a.download = buildSuggestedFilename();
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
-    a.remove();
-
+    document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    logLine(`[info] CSV downloaded: ${a.download}`);
   }
 
-  // ========= Event wiring =========
-  $("btnConnect").addEventListener("click", connect);
-  $("btnDisconnect").addEventListener("click", disconnect);
-  $("btnForget").addEventListener("click", forget);
+  document.getElementById('btnCopyTSV')?.addEventListener('click', copyResultTSV);
+  document.getElementById('btnDownloadCSV')?.addEventListener('click', () => downloadResultCSV());
 
-  $("btnStart").addEventListener("click", startLogging);
-  $("btnStop").addEventListener("click", stopLogging);
-  $("btnDownload").addEventListener("click", downloadCsv);
+  // ======================================================================
 
-  $("btnClear").addEventListener("click", () => {
-    $("log").textContent = "";
-    logLine("[info] log cleared.");
-  });
+  async function analyzeAndPlot(files) {
+    const overlayMode = document.getElementById('overlay').checked;
+    const showMarkers = document.getElementById('markers').checked;
 
-  $("saveMode").addEventListener("change", () => {
-    const mode = $("saveMode").value;
-    $("btnPickFile").disabled = (mode !== "stream") || !hasSavePicker || !!tickTimer;
-    if(mode !== "stream"){
-      fileHandle = null;
-      closeWritable();
-      logLine("[info] save mode: download");
-    }else{
-      logLine("[info] save mode: stream（保存先を選択してください）");
+    const minN = parseInt(document.getElementById('minN').value, 10) || 5;
+    const minR2 = parseFloat(document.getElementById('minR2').value);
+    const stepT = parseFloat(document.getElementById('stepT').value) || 1;
+
+    const items = [];
+
+    for (let i=0; i<files.length; i++) {
+      const f = files[i];
+      const text = await readFile(f);
+      const { rows } = parseCSV(text);
+      if (!rows.length) continue;
+
+      const maxElapsed = rows[rows.length - 1].elapsed;
+      const tStart = clampStartToData((startByName[f.name] ?? 0), maxElapsed);
+      startByName[f.name] = tStart;
+
+      const best = findLongestLinearInterval(rows, tStart, stepT, minN, minR2);
+
+      items.push({
+        name: f.name,
+        rows,
+        stats: computeStats(rows),
+        tStart,
+        best,
+        color: COLORS[i % COLORS.length]
+      });
     }
+
+    if (!items.length) {
+      alert('有効なデータ行が見つかりませんでした。CSVの列（elapsed_s, weight_g）を確認してください。');
+      return;
+    }
+
+    renderSummary(items, minN, minR2);
+    renderResultTable(items); // ★追加：表の更新
+
+    if (overlayMode) plotOverlay(items, showMarkers);
+    else plotSeparate(items, showMarkers);
+  }
+
+  // Events
+  fileInput.addEventListener('change', async () => {
+    updateFileNames();
+    lastFiles = getSelectedFiles();
+    lastFiles.forEach(f => { if (startByName[f.name] === undefined) startByName[f.name] = 0; });
+    if (lastFiles.length) await analyzeAndPlot(lastFiles);
   });
 
-  $("btnPickFile").addEventListener("click", pickSaveFile);
+  document.getElementById('overlay').addEventListener('change', async () => {
+    if (lastFiles.length) await analyzeAndPlot(lastFiles);
+  });
 
-  $("btnPickFile").disabled = ($("saveMode").value !== "stream") || !hasSavePicker;
+  document.getElementById('markers').addEventListener('change', async () => {
+    if (lastFiles.length) await analyzeAndPlot(lastFiles);
+  });
 
-  if(hasSerial){
-    navigator.serial.addEventListener("connect", (e) => {
-      logLine("[info] device connected to system.");
-    });
-    navigator.serial.addEventListener("disconnect", (e) => {
-      logLine("[warn] device disconnected from system.");
-      setConnState("warning", "デバイス切断");
-      if(tickTimer){
-        stopLogging();
+  document.getElementById('reanalyze').addEventListener('click', async () => {
+    lastFiles = getSelectedFiles();
+    if (lastFiles.length) await analyzeAndPlot(lastFiles);
+  });
+
+  document.getElementById('resetZoom').addEventListener('click', () => {
+    const plotDiv = document.getElementById('plot');
+    if (plotDiv && plotDiv.data) {
+      Plotly.relayout(plotDiv, { 'xaxis.autorange': true, 'yaxis.autorange': true });
+    }
+    document.querySelectorAll('#plots .plot').forEach(div => {
+      if (div && div.data) {
+        Plotly.relayout(div, { 'xaxis.autorange': true, 'yaxis.autorange': true });
       }
     });
-  }
-
-  setConnState("disconnected");
-  enableControlsConnected(false);
-  enableControlsLogging(false);
-  updateWeightUI();
-  updateKpi();
-
-  logLine("[info] ready. Click Connect to select a serial port.");
-})();
+  });
 </script>
 </body>
 </html>
-
